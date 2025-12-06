@@ -38,8 +38,7 @@ NoAdmin follows a modular architecture with these key components:
 
 1. **Deploy the project**:
    ```bash
-   chmod +x deployment_script.sh
-   ./deployment_script.sh [optional_target_directory]
+   bash 1click_deploy.sh [optional_target_directory]
    ```
 
 2. **Navigate to the deployment directory**:
@@ -82,7 +81,6 @@ If you need to deploy manually:
 1. Create the directory structure:
    ```bash
    sudo mkdir -p /usr/local/share/noadmin_v0.0.3/locales
-   sudo mkdir -p /home/admin/noadmin
    ```
 
 2. Copy language files:
