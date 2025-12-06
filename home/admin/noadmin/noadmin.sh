@@ -1,0 +1,845 @@
+#!/bin/bash
+
+# NoAdmin v0.0.3 - System Management AI Assistant (i18n Version)
+# Usage: ? [options] {question}
+#        ? --config    : Configure LLM providers
+#        ? --reset     : Clear all configurations
+#        ? --change    : Change default LLM provider
+#        ? --lang      : Change interface language
+#        ? --help      : Show this help message
+
+# Configuration file location
+CONFIG_FILE="$HOME/.noadmin_config"
+LOCALE_DIR="/usr/local/share/noadmin_v0.0.3/locales"
+
+# Default language
+DEFAULT_LANG="en"
+
+# Function to load language resources
+load_language() {
+    local lang_code="$1"
+    local locale_file="$LOCALE_DIR/$lang_code.sh"
+    
+    if [ -f "$locale_file" ]; then
+        source "$locale_file"
+        return 0
+    else
+        # Fallback to English if language file doesn't exist
+        if [ "$lang_code" != "en" ]; then
+            source "$LOCALE_DIR/en.sh"
+        fi
+        return 1
+    fi
+}
+
+# Function to get current language from config
+get_current_language() {
+    if [ -f "$CONFIG_FILE" ]; then
+        local lang=$(grep "^UI_LANGUAGE=" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2)
+        echo "${lang:-$DEFAULT_LANG}"
+    else
+        echo "$DEFAULT_LANG"
+    fi
+}
+
+# Function to set language in config
+set_language() {
+    local lang_code="$1"
+    
+    # Create config file if it doesn't exist
+    if [ ! -f "$CONFIG_FILE" ]; then
+        touch "$CONFIG_FILE"
+    fi
+    
+    # Update language in config
+    sed -i '/^UI_LANGUAGE=/d' "$CONFIG_FILE" 2>/dev/null
+    echo "UI_LANGUAGE=$lang_code" >> "$CONFIG_FILE"
+    
+    # Load the new language
+    load_language "$lang_code"
+}
+
+# Function to display help
+show_help() {
+    echo "$UI_WELCOME"
+    echo "$UI_USAGE"
+    echo ""
+    echo "$UI_OPTIONS"
+    echo "  --config    $UI_CONFIG"
+    echo "  --change    $UI_CHANGE"
+    echo "  --reset     $UI_RESET"
+    echo "  --lang      $UI_CHANGE"
+    echo "  --help      $UI_HELP"
+    echo ""
+    echo "$UI_EXAMPLES"
+    echo "  ? how to check disk space"
+    echo "  ? --config"
+    echo "  ? --change"
+    echo "  ? --lang"
+    echo "  ? --reset"
+    echo ""
+    echo "  [y/N/v]:[yes/No/verify]"
+}
+
+# Function to change language
+change_language() {
+    echo "$UI_AVAILABLE_LANG:"
+    echo "1) English"
+    echo "2) 中文 (Chinese)"
+    
+    read -p "$UI_SELECT_LANG [1]: " lang_choice
+    lang_choice=${lang_choice:-1}
+    
+    case $lang_choice in
+        1)
+            set_language "en"
+            echo "Language changed to English."
+            ;;
+        2)
+            set_language "zh"
+            echo "语言已更改为中文。"
+            ;;
+        *)
+            echo "Invalid choice."
+            ;;
+    esac
+    
+    exit 0
+}
+
+# Function to reset configuration
+reset_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        rm "$CONFIG_FILE"
+        echo "$UI_CONFIG_SAVED"
+    else
+        echo "$UI_NO_CONFIG_FILE"
+    fi
+    exit 0
+}
+
+# Function to change default provider
+change_default_provider() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "$UI_NO_CONFIG_FILE. $UI_RUN_CONFIG_FIRST"
+        exit 1
+    fi
+    
+    echo "$UI_AVAILABLE_PROVIDERS:"
+    
+    # Get all configured providers
+    providers=()
+    
+    # Check for standard providers
+    if grep -q "^deepseek=" "$CONFIG_FILE"; then
+        providers+=("deepseek")
+    fi
+    if grep -q "^openai=" "$CONFIG_FILE"; then
+        providers+=("openai")
+    fi
+    if grep -q "^zai=" "$CONFIG_FILE"; then
+        providers+=("zai")
+    fi
+    
+    # Check for custom providers
+    custom_providers=$(grep "^[^#].*|custom$" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f1)
+    for provider in $custom_providers; do
+        providers+=("$provider")
+    done
+    
+    if [ ${#providers[@]} -eq 0 ]; then
+        echo "$UI_NO_CONFIG_FILE. $UI_RUN_CONFIG_FIRST"
+        exit 1
+    fi
+    
+    # Get current default provider
+    current_default=$(grep "^DEFAULT_PROVIDER=" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2)
+    
+    echo "$UI_CURRENT_DEFAULT: ${current_default:-"$UI_NOT_SET"}"
+    echo ""
+    
+    # Display providers with numbers
+    for i in "${!providers[@]}"; do
+        provider="${providers[$i]}"
+        if [ "$provider" = "$current_default" ]; then
+            echo "$((i+1))) $provider ($UI_CURRENT_DEFAULT)"
+        else
+            echo "$((i+1))) $provider"
+        fi
+    done
+    
+    read -p "$UI_SELECT_PROVIDER: " choice
+    
+    # Validate choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#providers[@]} ]; then
+        selected_provider="${providers[$((choice-1))]}"
+        
+        # Update default provider
+        sed -i '/^DEFAULT_PROVIDER=/d' "$CONFIG_FILE" 2>/dev/null
+        echo "DEFAULT_PROVIDER=$selected_provider" >> "$CONFIG_FILE"
+        
+        echo "$UI_DEFAULT_SET_TO: $selected_provider"
+    else
+        echo "$UI_INVALID_CHOICE"
+        exit 1
+    fi
+    
+    exit 0
+}
+
+# Function to add a custom provider
+add_custom_provider() {
+    echo "$UI_ADDING_CUSTOM"
+    read -p "$UI_ENTER_PROVIDER_NAME: " provider_name
+    
+    # Check if provider already exists
+    if grep -q "^${provider_name}=" "$CONFIG_FILE" 2>/dev/null; then
+        echo "$UI_PROVIDER_EXISTS '$provider_name' $UI_ALREADY_EXISTS."
+        return 1
+    fi
+    
+    read -p "$UI_ENTER_API_ENDPOINT: " api_endpoint
+    read -p "$UI_ENTER_API: " api_key
+    read -p "$UI_ENTER_MODEL_NAME: " model
+    read -p "$UI_ENTER_AUTH_FORMAT (e.g., 'Bearer'): " auth_format
+    auth_format=${auth_format:-"Bearer"}
+    
+    # Add provider to config file
+    echo "${provider_name}=${api_endpoint}|${api_key}|${model}|${auth_format}|custom" >> "$CONFIG_FILE"
+    echo "$UI_CUSTOM_ADDED '$provider_name' $UI_HAS_BEEN_ADDED."
+    
+    # Ask if this should be the default provider
+    read -p "$UI_SET_AS_DEFAULT '$provider_name' $UI_AS_DEFAULT? (y/n) " set_default
+    if [[ "$set_default" =~ ^[Yy]$ ]]; then
+        sed -i '/^DEFAULT_PROVIDER=/d' "$CONFIG_FILE" 2>/dev/null
+        echo "DEFAULT_PROVIDER=$provider_name" >> "$CONFIG_FILE"
+        echo "$UI_DEFAULT_SET_TO: $provider_name"
+    fi
+}
+
+# Function to configure system role
+configure_system_role() {
+    echo ""
+    echo "$UI_SYSTEM_ROLE_CONFIG"
+    echo "========================"
+    echo "1) $UI_USE_DEFAULT"
+    echo "2) $UI_CUSTOMIZE"
+    echo "3) $UI_BACK_TO_MENU"
+    
+    read -p "$UI_ENTER_CHOICE [3]: " role_choice
+    role_choice=${role_choice:-3}
+    
+    # Detect OS version before displaying default system role
+    local os_version=$(detect_os)
+    
+    case $role_choice in
+        1)
+            # Use default system role (always in English)
+            default_system_role="You are a ${os_version} terminal. Please respond with executable command lines or scripts that can directly solve user problems, without any other information that would make them non-executable. If there is no suitable answer, simply reply 'No suitable executable command!'. Return only a single complete command, without code blocks, backticks, or other formatting. Ensure the command includes all necessary parameters and options, especially for network request commands, which must include the complete URL. If the command needs to access restricted system directories or requires administrator privileges, add 'sudo ' before the command."
+            
+            # Update system role in config
+            sed -i '/^SYSTEM_ROLE=/d' "$CONFIG_FILE" 2>/dev/null
+            echo "SYSTEM_ROLE=$default_system_role" >> "$CONFIG_FILE"
+            
+            echo "$UI_DEFAULT_ROLE_SET."
+            ;;
+        2)
+            # Customize system role
+            echo ""
+            echo "$UI_CURRENT_DEFAULT_ROLE:"
+            echo "==========================="
+            default_system_role="You are a ${os_version} terminal. Please respond with executable command lines or scripts that can directly solve user problems, without any other information that would make them non-executable. If there is no suitable answer, simply reply 'No suitable executable command!'. Return only a single complete command, without code blocks, backticks, or other formatting. Ensure the command includes all necessary parameters and options, especially for network request commands, which must include the complete URL. If the command needs to access restricted system directories or requires administrator privileges, add 'sudo ' before the command."
+            echo "$default_system_role"
+            echo ""
+            echo "$UI_ENTER_CUSTOM_ROLE (press Enter to use default):"
+            read -p "System role: " system_role
+            system_role=${system_role:-"$default_system_role"}
+            
+            # Update system role in config
+            sed -i '/^SYSTEM_ROLE=/d' "$CONFIG_FILE" 2>/dev/null
+            echo "SYSTEM_ROLE=$system_role" >> "$CONFIG_FILE"
+            
+            echo "$UI_CUSTOM_ROLE_SET."
+            ;;
+        3)
+            # Back to main menu
+            return 0
+            ;;
+        *)
+            echo "$UI_INVALID_CHOICE"
+            return 1
+            ;;
+    esac
+}
+
+# Function to initialize configuration
+init_config() {
+    while true; do
+        echo "NoAdmin $UI_CONFIGURATION"
+        echo "===================="
+        
+        # Create config file if it doesn't exist
+        if [ ! -f "$CONFIG_FILE" ]; then
+            touch "$CONFIG_FILE"
+        fi
+        
+        # Show existing providers
+        echo "$UI_AVAILABLE_PROVIDERS:"
+        echo "1) DeepSeek ($UI_DEFAULT)"
+        echo "2) OpenAI"
+        echo "3) Z.ai"
+        echo "4) $UI_ADD_CUSTOM"
+        echo "5) $UI_CONFIGURE_SYSTEM_ROLE"
+        echo "6) $UI_EXIT"
+        
+        # Check for existing custom providers
+        custom_providers=$(grep "^[^#].*|custom$" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f1)
+        if [ -n "$custom_providers" ]; then
+            echo "7) $UI_SELECT_EXISTING"
+        fi
+        
+        read -p "$UI_ENTER_CHOICE [6]: " provider_choice
+        provider_choice=${provider_choice:-6}
+        
+        case $provider_choice in
+            1)
+                echo "$UI_CONFIGURING DeepSeek..."
+                read -p "$UI_ENTER_YOUR DeepSeek $UI_API_KEY: " api_key
+                api_endpoint="https://api.deepseek.com/v1/chat/completions"
+                echo "$UI_AVAILABLE_MODELS: deepseek-chat, deepseek-coder"
+                read -p "$UI_ENTER_MODEL (default: deepseek-chat): " model
+                model=${model:-"deepseek-chat"}
+                
+                # Update config file
+                sed -i '/^deepseek=/d' "$CONFIG_FILE" 2>/dev/null
+                echo "deepseek=${api_endpoint}|${api_key}|${model}|Bearer|deepseek" >> "$CONFIG_FILE"
+                
+                # Set as default provider
+                sed -i '/^DEFAULT_PROVIDER=/d' "$CONFIG_FILE" 2>/dev/null
+                echo "DEFAULT_PROVIDER=deepseek" >> "$CONFIG_FILE"
+                echo "DeepSeek $UI_CONFIGURED_AS_DEFAULT."
+                
+                # Configure system role
+                configure_system_role
+                ;;
+            2)
+                echo "$UI_CONFIGURING OpenAI..."
+                read -p "$UI_ENTER_YOUR OpenAI $UI_API_KEY: " api_key
+                api_endpoint="https://api.openai.com/v1/chat/completions"
+                echo "$UI_AVAILABLE_MODELS: gpt-4, gpt-4-turbo, gpt-3.5-turbo"
+                read -p "$UI_ENTER_MODEL (default: gpt-3.5-turbo): " model
+                model=${model:-"gpt-3.5-turbo"}
+                
+                # Update config file
+                sed -i '/^openai=/d' "$CONFIG_FILE" 2>/dev/null
+                echo "openai=${api_endpoint}|${api_key}|${model}|Bearer|openai" >> "$CONFIG_FILE"
+                
+                # Set as default provider
+                sed -i '/^DEFAULT_PROVIDER=/d' "$CONFIG_FILE" 2>/dev/null
+                echo "DEFAULT_PROVIDER=openai" >> "$CONFIG_FILE"
+                echo "OpenAI $UI_CONFIGURED_AS_DEFAULT."
+                
+                # Configure system role
+                configure_system_role
+                ;;
+            3)
+                echo "$UI_CONFIGURING Z.ai..."
+                read -p "$UI_ENTER_YOUR Z.ai $UI_API_KEY: " api_key
+                api_endpoint="https://api.z.ai/api/paas/v4/chat/completions"
+                echo "$UI_AVAILABLE_MODELS: glm-4.5-flash, glm-4"
+                read -p "$UI_ENTER_MODEL (default: glm-4.5-flash): " model
+                model=${model:-"glm-4.5-flash"}
+                
+                # Update config file
+                sed -i '/^zai=/d' "$CONFIG_FILE" 2>/dev/null
+                echo "zai=${api_endpoint}|${api_key}|${model}|Bearer|zai" >> "$CONFIG_FILE"
+                
+                # Set as default provider
+                sed -i '/^DEFAULT_PROVIDER=/d' "$CONFIG_FILE" 2>/dev/null
+                echo "DEFAULT_PROVIDER=zai" >> "$CONFIG_FILE"
+                echo "Z.ai $UI_CONFIGURED_AS_DEFAULT."
+                
+                # Configure system role
+                configure_system_role
+                ;;
+            4)
+                add_custom_provider
+                # Configure system role
+                configure_system_role
+                ;;
+            5)
+                configure_system_role
+                ;;
+            6)
+                echo "$UI_EXITING_CONFIG."
+                break
+                ;;
+            7)
+                if [ -n "$custom_providers" ]; then
+                    echo "$UI_SELECT_EXISTING:"
+                    select provider in $custom_providers; do
+                        if [ -n "$provider" ]; then
+                            echo "$UI_SELECTED_PROVIDER: $provider"
+                            # Set as default provider
+                            sed -i '/^DEFAULT_PROVIDER=/d' "$CONFIG_FILE" 2>/dev/null
+                            echo "DEFAULT_PROVIDER=$provider" >> "$CONFIG_FILE"
+                            echo "$UI_DEFAULT_SET_TO: $provider"
+                            
+                            # Configure system role
+                            configure_system_role
+                            break
+                        fi
+                    done
+                else
+                    echo "$UI_NO_CUSTOM_PROVIDERS"
+                fi
+                ;;
+            *)
+                echo "$UI_INVALID_CHOICE"
+                ;;
+        esac
+        
+        echo ""
+        echo "$UI_CONFIG_SAVED $CONFIG_FILE"
+        echo ""
+    done
+}
+
+# Function to load configuration
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        # Get default provider
+        DEFAULT_PROVIDER=$(grep "^DEFAULT_PROVIDER=" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2)
+        
+        # If no default provider, set to deepseek
+        if [ -z "$DEFAULT_PROVIDER" ]; then
+            DEFAULT_PROVIDER="deepseek"
+            echo "DEFAULT_PROVIDER=deepseek" >> "$CONFIG_FILE"
+        fi
+        
+        # Get system role (always in English)
+        SYSTEM_ROLE=$(grep "^SYSTEM_ROLE=" "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2-)
+        
+        # If no system role, set default (in English)
+        if [ -z "$SYSTEM_ROLE" ]; then
+            # Detect OS version before setting default system role
+            local os_version=$(detect_os)
+            SYSTEM_ROLE="You are a ${os_version} terminal. Please respond with executable command lines or scripts that can directly solve user problems, without any other information that would make them non-executable. If there is no suitable answer, simply reply 'No suitable executable command!'. Return only a single complete command, without code blocks, backticks, or other formatting. Ensure the command includes all necessary parameters and options, especially for network request commands, which must include the complete URL. If the command needs to access restricted system directories or requires administrator privileges, add 'sudo ' before the command."
+            echo "SYSTEM_ROLE=$SYSTEM_ROLE" >> "$CONFIG_FILE"
+        fi
+        
+        # Load provider details
+        provider_line=$(grep "^${DEFAULT_PROVIDER}=" "$CONFIG_FILE" 2>/dev/null)
+        if [ -n "$provider_line" ]; then
+            IFS='|' read -r API_ENDPOINT API_KEY MODEL AUTH_FORMAT PROVIDER_TYPE <<< "${provider_line#*=}"
+            LLM_PROVIDER=$DEFAULT_PROVIDER
+        else
+            echo "$UI_PROVIDER_NOT_FOUND '$DEFAULT_PROVIDER' $UI_NOT_FOUND_CONFIG. $UI_RUN_CONFIG_FIRST to set up providers."
+            exit 1
+        fi
+    else
+        init_config
+        load_config
+    fi
+}
+
+# Function to detect OS version
+detect_os() {
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS="$NAME $VERSION"
+        elif [ -f /etc/redhat-release ]; then
+            OS=$(cat /etc/redhat-release)
+        elif [ -f /etc/lsb-release ]; then
+            . /etc/lsb-release
+            OS="$DISTRIB_DESCRIPTION"
+        else
+            OS="Linux (Unknown distribution)"
+        fi
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        OS="macOS $(sw_vers -productVersion)"
+    elif [[ "$OSTYPE" == "freebsd"* ]]; then
+        OS="FreeBSD $(freebsd-version)"
+    else
+        OS="Unknown OS"
+    fi
+    
+    echo "$OS"
+}
+
+# Initialize with the current language
+current_lang=$(get_current_language)
+load_language "$current_lang"
+
+# Check for command-line arguments
+if [ $# -eq 0 ]; then
+    show_help
+    exit 0
+fi
+
+# Process command-line arguments
+case "$1" in
+    --config)
+        init_config
+        exit 0
+        ;;
+    --change)
+        change_default_provider
+        ;;
+    --lang)
+        change_language
+        ;;
+    --reset)
+        reset_config
+        ;;
+    --help)
+        show_help
+        exit 0
+        ;;
+    --*)
+        echo "$MSG_ERROR_UNKNOWN_OPTION '$1'"
+        echo "$MSG_USE_HELP"
+        exit 1
+        ;;
+    *)
+        # Check if the question starts with '--'
+        if [[ "$1" == --* ]]; then
+            echo "$MSG_ERROR_QUESTIONS_START. $MSG_ERROR_OPTIONS_HELP"
+            exit 1
+        fi
+        
+        # Load configuration
+        load_config
+        
+        # Join all arguments into a single question
+        question="$*"
+        ;;
+esac
+
+# Detect OS version
+OS_VERSION=$(detect_os)
+
+# Function to call the API based on provider
+call_api() {
+    local response
+    
+    case $PROVIDER_TYPE in
+        "openai"|"deepseek"|"zai"|"custom")
+            response=$(curl -s -X POST "$API_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: $AUTH_FORMAT $API_KEY" \
+            -d "{
+            \"model\": \"$MODEL\",
+            \"messages\": [
+            {
+                \"role\": \"system\",
+                \"content\": \"$SYSTEM_ROLE\"
+            },
+            {
+                \"role\": \"user\",
+                \"content\": \"$question\"
+            }
+            ],
+            \"temperature\": 0.2,
+            \"stream\": false,
+            \"max_tokens\": 500
+            }")
+            ;;
+    esac
+    
+    echo "$response"
+}
+
+# Function to escape JSON string - improved version
+json_escape() {
+    local input="$1"
+    # Use printf to properly escape the string
+    printf '%s' "$input" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n' | sed 's/\\n$//'
+}
+
+# Function to detect question language - improved version
+detect_question_language() {
+    local question="$1"
+    
+    # Simple heuristic: if the question contains Chinese characters, it's Chinese
+    # Use a more reliable method to detect Chinese characters
+    if echo "$question" | LC_ALL=C grep -q '[一-龯]'; then
+        echo "zh"
+    else
+        echo "en"
+    fi
+}
+
+# Function to verify command - improved version
+verify_command() {
+    local cmd="$1"
+    local verify_response
+    local explanation=""
+    
+    # Create a temporary file for the command
+    local temp_cmd_file=$(mktemp)
+    echo "$cmd" > "$temp_cmd_file"
+    
+    # For very long commands, truncate them to avoid API limits
+    local cmd_length=${#cmd}
+    local max_cmd_length=1000  # Maximum command length to send for verification
+    
+    if [ $cmd_length -gt $max_cmd_length ]; then
+        # Truncate the command and add an indicator
+        local truncated_cmd="${cmd:0:$max_cmd_length}...[truncated]"
+        cmd="$truncated_cmd"
+    fi
+    
+    # Escape the command for JSON using improved function
+    local escaped_cmd=$(json_escape "$cmd")
+    
+    # Detect question language to match verification language
+    local question_lang=$(detect_question_language "$question")
+    
+    # Prepare verification prompts based on detected language
+    local verify_system_prompt
+    local verify_user_prompt
+    
+    if [ "$question_lang" = "zh" ]; then
+        verify_system_prompt="$VERIFY_SYSTEM_PROMPT"
+        # Use printf to avoid sed issues with special characters
+        verify_user_prompt=$(printf "请反推：%s，只回复一句话作总结。例子： sudo arp-scan --localnet ，回复：该命令用于扫描本地网络中的所有设备并列出其MAC地址。" "$escaped_cmd")
+    else
+        verify_system_prompt="$VERIFY_SYSTEM_PROMPT"
+        # Use printf to avoid sed issues with special characters
+        verify_user_prompt=$(printf "Please reverse-engineer: %s, reply with only one sentence summary. Example: sudo arp-scan --localnet, reply: This command scans all devices on the local network and lists their MAC addresses." "$escaped_cmd")
+    fi
+    
+    case $PROVIDER_TYPE in
+        "openai"|"deepseek"|"zai"|"custom")
+            verify_response=$(curl -s -X POST "$API_ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: $AUTH_FORMAT $API_KEY" \
+            -d "{
+            \"model\": \"$MODEL\",
+            \"messages\": [
+            {
+                \"role\": \"system\",
+                \"content\": \"$verify_system_prompt\"
+            },
+            {
+                \"role\": \"user\",
+                \"content\": \"$verify_user_prompt\"
+            }
+            ],
+            \"temperature\": 0.2,
+            \"stream\": false,
+            \"max_tokens\": 100
+            }")
+            ;;
+    esac
+    
+    # Debug: Save response to a temp file for inspection
+    echo "$verify_response" > /tmp/noadmin_verify_debug.log
+    
+    # Extract the explanation from the response with multiple fallback methods
+    if command -v jq &> /dev/null; then
+        explanation=$(echo "$verify_response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+        if [ -z "$explanation" ] || [ "$explanation" = "null" ]; then
+            # Try alternative jq path
+            explanation=$(echo "$verify_response" | jq -r '.choices[0].message.content' 2>/dev/null)
+        fi
+    fi
+    
+    # If jq failed or not available, try Python
+    if [ -z "$explanation" ] || [ "$explanation" = "null" ]; then
+        if command -v python3 &> /dev/null; then
+            explanation=$(echo "$verify_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if 'choices' in data and len(data['choices']) > 0:
+        content = data['choices'][0].get('message', {}).get('content', '')
+        if content:
+            print(content)
+except Exception as e:
+    sys.stderr.write(f'Error parsing JSON: {e}\n')
+" 2>/dev/null)
+        elif command -v python &> /dev/null; then
+            explanation=$(echo "$verify_response" | python -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if 'choices' in data and len(data['choices']) > 0:
+        content = data['choices'][0].get('message', {}).get('content', '')
+        if content:
+            print(content)
+except Exception as e:
+    sys.stderr.write('Error parsing JSON: ' + str(e) + '\n')
+" 2>/dev/null)
+        fi
+    fi
+    
+    # Last resort - simple text extraction
+    if [ -z "$explanation" ] || [ "$explanation" = "null" ]; then
+        # Try to extract content between "content":" and the next quote
+        explanation=$(echo "$verify_response" | grep -o '"content":"[^"]*"' | cut -d'"' -f4 | head -1)
+        
+        # If still empty, try a different pattern
+        if [ -z "$explanation" ]; then
+            explanation=$(echo "$verify_response" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p' | head -1)
+        fi
+    fi
+    
+    # Clean up the explanation - remove any remaining JSON artifacts
+    if [ -n "$explanation" ] && [ "$explanation" != "null" ]; then
+        explanation=$(echo "$explanation" | sed 's/\\n/ /g; s/\\"/"/g')
+    else
+        # If we still can't parse the response, provide a generic explanation based on command analysis
+        if [[ "$cmd" == *"apt install"* ]] || [[ "$cmd" == *"apt-get install"* ]]; then
+            explanation="$VERIFY_INSTALL_PACKAGES"
+        elif [[ "$cmd" == *"nginx"* ]]; then
+            explanation="$VERIFY_NGINX"
+        elif [[ "$cmd" == *"ufw"* ]]; then
+            explanation="$VERIFY_UFW"
+        elif [[ "$cmd" == *"certbot"* ]]; then
+            explanation="$VERIFY_CERTBOT"
+        elif [[ "$cmd" == *"mkdir"* ]]; then
+            explanation="$VERIFY_MKDIR"
+        elif [[ "$cmd" == *"tee"* ]]; then
+            explanation="$VERIFY_TEE"
+        elif [[ "$cmd" == *"ln -s"* ]]; then
+            explanation="$VERIFY_LN"
+        elif [[ "$cmd" == *"systemctl"* ]]; then
+            explanation="$VERIFY_SYSTEMCTL"
+        elif [[ "$cmd" == *"date"* ]]; then
+            explanation="$VERIFY_DATE"
+        else
+            explanation="$VERIFY_GENERIC"
+        fi
+    fi
+    
+    # Clean up temporary file
+    rm -f "$temp_cmd_file"
+    
+    echo "$explanation"
+}
+
+# Call the API
+response=$(call_api)
+
+# Check if the response contains an error
+if echo "$response" | grep -q '"error"'; then
+    error_code=$(echo "$response" | grep -o '"code":"[^"]*' | cut -d'"' -f4)
+    error_message=$(echo "$response" | grep -o '"message":"[^"]*' | cut -d'"' -f4)
+    
+    echo "$MSG_API_ERROR (Code: $error_code): $error_message"
+    echo "$MSG_UNABLE_TO_PROCEED"
+    exit 1
+fi
+
+# Extract the command from the response
+if command -v jq &> /dev/null; then
+    command_content=$(echo "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+    if [ -z "$command_content" ] || [ "$command_content" = "null" ]; then
+        # Try alternative jq path
+        command_content=$(echo "$response" | jq -r '.choices[0].message.content' 2>/dev/null)
+    fi
+fi
+
+# If jq failed or not available, try Python
+if [ -z "$command_content" ] || [ "$command_content" = "null" ]; then
+    if command -v python3 &> /dev/null; then
+        command_content=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if 'choices' in data and len(data['choices']) > 0:
+        content = data['choices'][0].get('message', {}).get('content', '')
+        if content:
+            print(content)
+except Exception as e:
+    sys.stderr.write(f'Error parsing JSON: {e}\n')
+" 2>/dev/null)
+    elif command -v python &> /dev/null; then
+        command_content=$(echo "$response" | python -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if 'choices' in data and len(data['choices']) > 0:
+        content = data['choices'][0].get('message', {}).get('content', '')
+        if content:
+            print(content)
+except Exception as e:
+    sys.stderr.write('Error parsing JSON: ' + str(e) + '\n')
+" 2>/dev/null)
+    fi
+fi
+
+# Last resort - simple text extraction
+if [ -z "$command_content" ] || [ "$command_content" = "null" ]; then
+    # Try to extract content between "content":" and the next quote
+    command_content=$(echo "$response" | grep -o '"content":"[^"]*"' | cut -d'"' -f4 | head -1)
+    
+    # If still empty, try a different pattern
+    if [ -z "$command_content" ]; then
+        command_content=$(echo "$response" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p' | head -1)
+    fi
+fi
+
+# Check if we got valid content
+if [ -z "$command_content" ] || [ "$command_content" = "null" ]; then
+    echo "$MSG_ERROR_RESPONSE"
+    echo "$MSG_RESPONSE: $response"
+    exit 1
+fi
+
+# Clean up the command content - remove code blocks and backticks, but preserve the command
+# First, remove code block markers
+command_content=$(echo "$command_content" | sed 's/^```bash//' | sed 's/^```//' | sed 's/```$//')
+
+# Then, remove backticks at the beginning and end
+command_content=$(echo "$command_content" | sed 's/^`//;s/`$//')
+
+# Remove leading/trailing whitespace
+command_content=$(echo "$command_content" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+# Check if the command is the "no suitable command" message
+if [[ "$command_content" == "No suitable executable command!" ]]; then
+    echo "AI: $command_content"
+    exit 0
+fi
+
+# Display the command in the expected format
+echo "AI: \$$command_content"
+
+# Ask for confirmation with options y/N/v
+read -p "$CMD_EXECUTE [y/N/v]: " confirm
+confirm=${confirm:-n}
+
+if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    echo "$UI_EXECUTING_COMMAND..."
+    # Execute the command and ensure output is visible
+    # Use a consistent execution method for all commands
+    bash -c "$command_content"
+    # Add a newline after command execution to ensure proper formatting
+    echo
+elif [[ "$confirm" =~ ^[Vv]$ ]]; then
+    # Verify the command
+    echo "$UI_VERIFYING_COMMAND..."
+    explanation=$(verify_command "$command_content")
+    echo "$UI_COMMAND_EXPLANATION: $explanation"
+    
+    # Ask for confirmation again
+    read -p "$CMD_EXECUTE [y/N]: " confirm_again
+    confirm_again=${confirm_again:-n}
+    
+    if [[ "$confirm_again" =~ ^[Yy]$ ]]; then
+        echo "$UI_EXECUTING_COMMAND..."
+        # Execute the command and ensure output is visible
+        bash -c "$command_content"
+        # Add a newline after command execution to ensure proper formatting
+        echo
+    else
+        echo "$UI_COMMAND_NOT_EXECUTED."
+    fi
+else
+    echo "$UI_COMMAND_NOT_EXECUTED."
+fi
+
